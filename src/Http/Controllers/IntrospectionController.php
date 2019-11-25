@@ -39,7 +39,7 @@ class IntrospectionController
 	private $clientRepository;
 
     /**
-     * @var Illuminate\Contracts\Auth\UserProvider
+     * @var \Illuminate\Contracts\Auth\UserProvider
      */
     private $userProvider;
 
@@ -112,7 +112,7 @@ class IntrospectionController
             'active' => true,
             'scope' => trim(implode(' ', (array)$token->getClaim('scopes', []))),
             'client_id' => intval($token->getClaim('aud')),
-            'username' => $user->email,
+            'username' => $user->{$this->usernameProperty} ?? null,
             'token_type' => 'access_token',
             'exp' => intval($token->getClaim('exp')),
             'iat' => intval($token->getClaim('iat')),
@@ -144,6 +144,10 @@ class IntrospectionController
 		return new JsonResponse($data, $status);
 	}
 
+    /**
+     * @param Token $token
+     * @return bool
+     */
 	private function verifyToken(Token $token) : bool
 	{
 		$signer = new \Lcobucci\JWT\Signer\Rsa\Sha256();
