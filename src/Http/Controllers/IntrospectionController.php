@@ -4,6 +4,7 @@ namespace Ipunkt\Laravel\OAuthIntrospection\Http\Controllers;
 
 use Illuminate\Contracts\Auth\UserProvider;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Arr;
 use Laravel\Passport\Bridge\AccessTokenRepository;
 use Laravel\Passport\ClientRepository;
 use Laravel\Passport\Passport;
@@ -87,12 +88,12 @@ class IntrospectionController
             return $oAuthServerException->generateHttpResponse(new Psr7Response);
         }
 
-        if (array_get($request->getParsedBody(), 'token_type_hint', 'access_token') !== 'access_token') {
+        if (Arr::get($request->getParsedBody(), 'token_type_hint', 'access_token') !== 'access_token') {
             //  unsupported introspection
             return $this->notActiveResponse();
         }
 
-        $accessToken = array_get($request->getParsedBody(), 'token');
+        $accessToken = Arr::get($request->getParsedBody(), 'token');
         if ($accessToken === null) {
             return $this->notActiveResponse();
         }
@@ -180,5 +181,4 @@ class IntrospectionController
 
 		return false;
 	}
-
 }
