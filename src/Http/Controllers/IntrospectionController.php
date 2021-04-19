@@ -8,9 +8,14 @@ use Illuminate\Support\Arr;
 use Laravel\Passport\Bridge\AccessTokenRepository;
 use Laravel\Passport\ClientRepository;
 use Laravel\Passport\Passport;
+use Lcobucci\Clock\SystemClock;
+use Lcobucci\JWT\Configuration;
 use Lcobucci\JWT\Parser;
+use Lcobucci\JWT\Signer\Key\InMemory;
+use Lcobucci\JWT\Signer\Rsa\Sha256;
 use Lcobucci\JWT\Token;
-use Lcobucci\JWT\ValidationData;
+use Lcobucci\JWT\Validation\Constraint\SignedWith;
+use Lcobucci\JWT\Validation\Constraint\ValidAt;
 use League\OAuth2\Server\Exception\OAuthServerException;
 use League\OAuth2\Server\ResourceServer;
 use Psr\Http\Message\ResponseInterface;
@@ -19,10 +24,11 @@ use Laminas\Diactoros\Response as Psr7Response;
 
 class IntrospectionController
 {
-	/**
-	 * @var \Lcobucci\JWT\Parser
-	 */
-	private $jwt;
+
+    /**
+     * @var Configuration
+     */
+    private $jwtConfig;
 
 	/**
 	 * @var \League\OAuth2\Server\ResourceServer
@@ -52,25 +58,34 @@ class IntrospectionController
 	/**
 	 * constructing IntrospectionController
 	 *
-	 * @param \Lcobucci\JWT\Parser $jwt
 	 * @param \League\OAuth2\Server\ResourceServer $resourceServer
 	 * @param \Laravel\Passport\Bridge\AccessTokenRepository $accessTokenRepository
 	 * @param \Laravel\Passport\ClientRepository
      * @param \Illuminate\Contracts\Auth\UserProvider $userProvider
 	 */
 	public function __construct(
-		Parser $jwt,
 		ResourceServer $resourceServer,
 		AccessTokenRepository $accessTokenRepository,
 		ClientRepository $clientRepository,
         UserProvider $userProvider
 	)
 	{
-		$this->jwt = $jwt;
 		$this->resourceServer = $resourceServer;
 		$this->accessTokenRepository = $accessTokenRepository;
 		$this->clientRepository = $clientRepository;
-        $this->userProvider = $userProvider;
+		$this->userProvider = $userProvider;
+
+		$signer = new Sha256();
+		$publicKeyPath = Passport::keyPath('oauth-public.key');
+
+		$key = InMemory::file($publicKeyPath);
+		$jwtConfig = Configuration::forSymmetricSigner($signer, $key);
+		$jwtConfig->setValidationConstraints(
+			new ValidAt(new SystemClock(new \DateTimeZone(\date_default_timezone_get()))),
+			new SignedWith(new Sha256(), $key)
+		);
+
+		$this->jwtConfig = $jwtConfig;
 	}
 
 	/**
@@ -98,29 +113,31 @@ class IntrospectionController
             return $this->notActiveResponse();
         }
 
-        $token = $this->jwt->parse($accessToken);
+        $token = $this->jwtConfig->parser()->parse($accessToken);
         if (!$this->verifyToken($token)) {
             return $this->notActiveResponse();
         }
 
+        $claims = $token->claims();
+
         # get user by token subject ID, from the UserProvider
-        $user = $this->userProvider->retrieveById($token->getClaim('sub'));
+        $user = $this->userProvider->retrieveById($claims->get('sub'));
         if( is_null($user) ) {
             return $this->notActiveResponse();
         }
 
         return $this->jsonResponse([
             'active' => true,
-            'scope' => trim(implode(' ', (array)$token->getClaim('scopes', []))),
-            'client_id' => intval($token->getClaim('aud')),
+            'scope' => trim(implode(' ', (array)$claims->get('scopes', []))),
+            'client_id' => intval($claims->get('aud')),
             'username' => $user->{$this->usernameProperty} ?? null,
             'token_type' => 'access_token',
-            'exp' => intval($token->getClaim('exp')),
-            'iat' => intval($token->getClaim('iat')),
-            'nbf' => intval($token->getClaim('nbf')),
-            'sub' => intval($token->getClaim('sub')),
-            'aud' => intval($token->getClaim('aud')),
-            'jti' => $token->getClaim('jti'),
+            'exp' => $claims->get('exp')->getTimestamp(),
+            'iat' => $claims->get('iat')->getTimestamp(),
+            'nbf' => $claims->get('nbf')->getTimestamp(),
+            'sub' => intval($claims->get('sub')),
+            'aud' => intval($claims->get('aud')),
+            'jti' => $claims->get('jti'),
         ]);
 	}
 
@@ -145,37 +162,29 @@ class IntrospectionController
 		return new JsonResponse($data, $status);
 	}
 
-    /**
-     * @param Token $token
-     * @return bool
-     */
+	/**
+	 * @param Token $token
+	 * @return bool
+	 */
 	private function verifyToken(Token $token) : bool
 	{
-		$signer = new \Lcobucci\JWT\Signer\Rsa\Sha256();
-		$publicKey = 'file://' . Passport::keyPath('oauth-public.key');
-
 		try {
-			if (!$token->verify($signer, $publicKey)) {
-				return false;
-			}
 
-			$data = new ValidationData();
-			$data->setCurrentTime(time());
-
-			if (!$token->validate($data)) {
+			if (!$this->jwtConfig->validator()->validate($token, ...$this->jwtConfig->validationConstraints())) {
 				return false;
 			}
 
 			//  is token revoked?
-			if ($this->accessTokenRepository->isAccessTokenRevoked($token->getClaim('jti'))) {
+			if ($this->accessTokenRepository->isAccessTokenRevoked($token->claims()->get('jti'))) {
 				return false;
 			}
 
-			if ($this->clientRepository->revoked($token->getClaim('aud'))) {
+			if ($this->clientRepository->revoked($token->claims()->get('aud'))) {
 				return false;
 			}
 
 			return true;
+
 		} catch (\Exception $exception) {
 		}
 
